@@ -6,7 +6,7 @@ from pathlib import Path
 import joblib
 import pandas as pd
 
-from policypulse_model import build_features, load_csv
+from policypulse_model import ACCEPTANCE_ID_TO_LABEL, build_features, load_csv
 
 
 def main() -> None:
@@ -35,8 +35,11 @@ def main() -> None:
     for column in ("policy_id", "policy_name"):
         if column in policies.columns:
             results[column] = policies[column]
-    results["predicted_public_reaction"] = acceptance_model.predict(features)
-    accepted_index = list(acceptance_model.classes_).index("Accepted")
+    predicted_codes = acceptance_model.predict(features).astype(int)
+    results["predicted_public_reaction"] = [
+        ACCEPTANCE_ID_TO_LABEL[code] for code in predicted_codes
+    ]
+    accepted_index = list(acceptance_model.classes_).index(0)
     results["predicted_acceptance_probability"] = acceptance_model.predict_proba(
         features
     )[:, accepted_index]

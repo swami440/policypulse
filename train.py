@@ -5,20 +5,27 @@ import json
 from pathlib import Path
 
 import joblib
+import numpy as np
 import pandas as pd
 from sklearn.linear_model import LogisticRegression, Ridge
 from sklearn.metrics import (
     accuracy_score,
     balanced_accuracy_score,
+    confusion_matrix,
     f1_score,
     mean_absolute_error,
     mean_squared_error,
+    precision_score,
+    recall_score,
 )
 from sklearn.model_selection import train_test_split
 from sklearn.pipeline import Pipeline
+from sklearn.semi_supervised import SelfTrainingClassifier
 
 from policypulse_model import (
     ACCEPTANCE_LABELS,
+    ACCEPTANCE_LABEL_TO_ID,
+    ACCEPTANCE_ID_TO_LABEL,
     build_features,
     load_csv,
     make_preprocessor,
@@ -26,10 +33,12 @@ from policypulse_model import (
 
 
 RANDOM_STATE = 42
+SELF_TRAINING_THRESHOLD = 0.75
+ACCEPTANCE_CLASS_ORDER = ["Accepted", "Rejected"]
 
 
 def evaluate_models(data: pd.DataFrame) -> tuple[dict, Pipeline, Pipeline]:
-    """Evaluate on a stratified holdout, then fit final models on all labeled rows."""
+    """Evaluate with a stratified holdout, then fit final models on all available data."""
     labelled = data.loc[
         data["label_status"].eq("LABELLED")
         & data["public_reaction"].isin(ACCEPTANCE_LABELS)
@@ -59,22 +68,43 @@ def evaluate_models(data: pd.DataFrame) -> tuple[dict, Pipeline, Pipeline]:
     train_x, test_x = features.loc[train_idx], features.loc[test_idx]
     train_y, test_y = labels.loc[train_idx], labels.loc[test_idx]
 
+    unlabeled = data.loc[data["label_status"].eq("UNLABELLED")]
+    unlabeled_features = build_features(unlabeled)
+
     acceptance_model = Pipeline(
         steps=[
             ("preprocessor", make_preprocessor()),
             (
                 "classifier",
-                LogisticRegression(
-                    class_weight="balanced",
-                    C=0.5,
-                    max_iter=2000,
-                    random_state=RANDOM_STATE,
+                SelfTrainingClassifier(
+                    LogisticRegression(
+                        class_weight="balanced",
+                        C=0.5,
+                        max_iter=2000,
+                        random_state=RANDOM_STATE,
+                    ),
+                    criterion="threshold",
+                    threshold=SELF_TRAINING_THRESHOLD,
+                    max_iter=10,
                 ),
             ),
         ]
     )
-    acceptance_model.fit(train_x, train_y)
-    predicted_labels = acceptance_model.predict(test_x)
+    train_codes = train_y.map(ACCEPTANCE_LABEL_TO_ID).to_numpy(dtype=int)
+    evaluation_x = pd.concat(
+        [train_x.reset_index(drop=True), unlabeled_features.reset_index(drop=True)],
+        ignore_index=True,
+    )
+    evaluation_y = np.concatenate(
+        [train_codes, np.full(len(unlabeled_features), -1, dtype=int)]
+    )
+    acceptance_model.fit(evaluation_x, evaluation_y)
+    predicted_codes = acceptance_model.predict(test_x).astype(int)
+    predicted_labels = [ACCEPTANCE_ID_TO_LABEL[code] for code in predicted_codes]
+    classifier = acceptance_model.named_steps["classifier"]
+    pseudo_labeled_evaluation_rows = int(
+        np.count_nonzero(classifier.labeled_iter_[len(train_codes) :] >= 0)
+    )
 
     approval_train_mask = approval.loc[train_idx].notna()
     approval_test_mask = approval.loc[test_idx].notna()
@@ -102,10 +132,27 @@ def evaluate_models(data: pd.DataFrame) -> tuple[dict, Pipeline, Pipeline]:
         },
         "approval_rows": int(approval_mask.sum()),
         "holdout_rows": int(len(test_idx)),
+        "semi_supervised": {
+            "algorithm": "SelfTrainingClassifier",
+            "confidence_threshold": SELF_TRAINING_THRESHOLD,
+            "unlabeled_rows_available": int(len(unlabeled_features)),
+            "pseudo_labeled_rows_for_evaluation": pseudo_labeled_evaluation_rows,
+        },
         "acceptance": {
             "accuracy": float(accuracy_score(test_y, predicted_labels)),
             "balanced_accuracy": float(balanced_accuracy_score(test_y, predicted_labels)),
             "macro_f1": float(f1_score(test_y, predicted_labels, average="macro")),
+            "weighted_f1": float(f1_score(test_y, predicted_labels, average="weighted")),
+            "macro_precision": float(
+                precision_score(test_y, predicted_labels, average="macro", zero_division=0)
+            ),
+            "macro_recall": float(
+                recall_score(test_y, predicted_labels, average="macro", zero_division=0)
+            ),
+            "confusion_matrix": confusion_matrix(
+                test_y, predicted_labels, labels=ACCEPTANCE_CLASS_ORDER
+            ).tolist(),
+            "confusion_matrix_labels": ACCEPTANCE_CLASS_ORDER,
         },
         "public_approval_percent": {
             "mae_percentage_points": float(
@@ -122,7 +169,19 @@ def evaluate_models(data: pd.DataFrame) -> tuple[dict, Pipeline, Pipeline]:
         ),
     }
 
-    acceptance_model.fit(features, labels)
+    final_codes = labels.map(ACCEPTANCE_LABEL_TO_ID).to_numpy(dtype=int)
+    final_features = pd.concat(
+        [features.reset_index(drop=True), unlabeled_features.reset_index(drop=True)],
+        ignore_index=True,
+    )
+    final_targets = np.concatenate(
+        [final_codes, np.full(len(unlabeled_features), -1, dtype=int)]
+    )
+    acceptance_model.fit(final_features, final_targets)
+    final_classifier = acceptance_model.named_steps["classifier"]
+    metrics["semi_supervised"]["pseudo_labeled_rows_final_fit"] = int(
+        np.count_nonzero(final_classifier.labeled_iter_[len(final_codes) :] >= 0)
+    )
     approval_model.fit(features.loc[approval_mask], approval.loc[approval_mask])
     return metrics, acceptance_model, approval_model
 

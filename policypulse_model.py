@@ -31,6 +31,8 @@ NUMERIC_COLUMNS = [
 ]
 FEATURE_COLUMNS = TEXT_COLUMNS + CATEGORICAL_COLUMNS + NUMERIC_COLUMNS
 ACCEPTANCE_LABELS = {"Accepted", "Rejected"}
+ACCEPTANCE_LABEL_TO_ID = {"Accepted": 0, "Rejected": 1}
+ACCEPTANCE_ID_TO_LABEL = {value: key for key, value in ACCEPTANCE_LABEL_TO_ID.items()}
 
 
 def load_csv(path: str | Path) -> pd.DataFrame:

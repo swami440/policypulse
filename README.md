@@ -11,10 +11,20 @@ decisions. The approval estimate is a survey-opinion measure; the dataset has no
 explicit real-world policy-impact outcome, so this project does **not** predict
 causal or measured policy impact.
 
+The acceptance classifier uses semi-supervised self-training: labeled training
+rows seed a logistic-regression classifier, which adds high-confidence
+pseudo-labels from `UNLABELLED` rows. The confidence threshold is 0.75. The
+public-approval regressor remains supervised because approval values are absent
+from unlabeled rows.
+
 The models use policy descriptions and policy attributes. They deliberately
 exclude acceptance labels, approval/disapproval percentages, survey details,
 evidence text, and source URLs from the input features to reduce target leakage.
-Evaluation uses a stratified 25% holdout and should be treated as preliminary.
+Evaluation uses a stratified 25% holdout of labeled rows; the holdout is not used
+for pseudo-labeling or model fitting. The printed and saved `metrics.json` report
+includes accuracy, balanced accuracy, macro/weighted F1, macro precision/recall,
+confusion matrix, and approval MAE/RMSE. Results should be treated as
+preliminary because the labeled dataset is small.
 
 ## Setup (Windows PowerShell)
 
